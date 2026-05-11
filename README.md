@@ -86,6 +86,12 @@ VAULT_VALUE = ${vault:/path/to/secret}
 // Use a static secret from Akeyless (set AKEYLESS_ACCESS_ID / AKEYLESS_ACCESS_KEY or AKEYLESS_TOKEN)
 API_KEY = ${akeyless:/prod/my-app/api-key}
 
+// Dynamic secret (JSON string: credentials payload). Prefix uses underscores so it matches ${...} rules.
+DB_CREDS = ${akeyless_dynamic(timeout=30,args=--k=v|other):/dyn/postgres}
+
+// Rotated secret (JSON string). Optional host for linked targets (or AKEYLESS_ROTATED_SECRET_HOST).
+ROTATED = ${akeyless_rotated(host=my.db.host):/rotated/mysql}
+
 ```
 
 - If you were earlier running your application using `node app.js`, use:
@@ -115,7 +121,7 @@ SecretsFoundry currently provides support for the following sources:
 3. Hashicorp Vault
 4. AWS S3
 5. Google Secret Manager
-6. Akeyless (static secrets via `get-secret-value`)
+6. Akeyless — static (`akeyless:`), dynamic (`akeyless_dynamic:`), and rotated (`akeyless_rotated:`) secrets
 
 We will soon be extending support for Azure Key Vault. If you need support
 for other sources, reach out to us for support or send a PR.
@@ -146,10 +152,17 @@ AWS_S3_VALUE = ${aws-s3:bucket/key}
 // Use value from Hashicorp vault
 VAULT_VALUE = ${vault:/path/to/secret}
 
-// Akeyless static secret — env: AKEYLESS_GATEWAY_URL (optional), AKEYLESS_TOKEN or AKEYLESS_ACCESS_ID + AKEYLESS_ACCESS_KEY
+// Akeyless static — env: AKEYLESS_GATEWAY_URL (optional), AKEYLESS_TOKEN or AKEYLESS_ACCESS_ID + AKEYLESS_ACCESS_KEY
 // Args: gateway, ignore-cache, json, version
-// Example: ${akeyless(gateway=https://gateway.example.com:8080/v2):/path/to/secret}
 AKEYLESS_SECRET = ${akeyless:/path/to/secret}
+
+// Akeyless dynamic — response is JSON string. Args: gateway, timeout, args (pipe-separated), host, dbname, target, json
+// Env fallbacks: AKEYLESS_DYNAMIC_TIMEOUT, AKEYLESS_DYNAMIC_ARGS (pipe-separated)
+AKEYLESS_DYNAMIC = ${akeyless_dynamic(timeout=45):/path/to/dynamic-secret}
+
+// Akeyless rotated — response is JSON string. Args: gateway, host, ignore-cache, json, version
+// Env: AKEYLESS_ROTATED_SECRET_HOST when host is not passed as an arg
+AKEYLESS_ROTATED = ${akeyless_rotated:/path/to/rotated-secret}
 ```
 
 ## Advanced Usage:

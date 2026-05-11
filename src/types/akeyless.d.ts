@@ -7,6 +7,8 @@ declare module 'akeyless' {
     constructor(client: ApiClient);
     auth(body: unknown): Promise<{ token?: string }>;
     getSecretValue(body: unknown): Promise<Record<string, unknown>>;
+    getDynamicSecretValue(body: unknown): Promise<unknown>;
+    getRotatedSecretValue(body: unknown): Promise<unknown>;
   }
 
   export const Auth: {
@@ -14,6 +16,14 @@ declare module 'akeyless' {
   };
 
   export const GetSecretValue: {
+    constructFromObject(data: Record<string, unknown>): unknown;
+  };
+
+  export const GetDynamicSecretValue: {
+    constructFromObject(data: Record<string, unknown>): unknown;
+  };
+
+  export const GetRotatedSecretValue: {
     constructFromObject(data: Record<string, unknown>): unknown;
   };
 }

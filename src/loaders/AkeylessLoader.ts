@@ -38,64 +38,112 @@ const pickSecretFromResponse = function (
   ];
   for (const key of candidates) {
     if (Object.prototype.hasOwnProperty.call(data, key)) {
-      const s = stringifySecretValue(data[key]);
-      if (s !== '') {
-        return s;
-      }
-    }
-  }
-  for (const value of Object.values(data)) {
-    const s = stringifySecretValue(value);
-    if (s.trim() !== '') {
-      return s;
+      // Return the value for this key even when empty — do not fall through to
+      // another key (avoids returning an unrelated secret from the same payload).
+      return stringifySecretValue(data[key]);
     }
   }
   throw new Error(`No value for "${requestedPath}" in Akeyless response`);
 };
 
+/** Dynamic / rotated APIs return a JSON object; stringify for interpolation (same idea as the Buildkite plugin). */
+const formatStructuredResponse = function (data: unknown): string {
+  if (data === null || data === undefined) {
+    throw new Error('Akeyless returned an empty response');
+  }
+  if (typeof data === 'string') {
+    return data;
+  }
+  return JSON.stringify(data);
+};
+
+const getGatewayUrl = function (args: Record<string, string | undefined>): string {
+  return (
+    args.gateway ||
+    process.env.AKEYLESS_GATEWAY_URL?.trim() ||
+    'https://api.akeyless.io'
+  ).replace(/\/$/, '');
+};
+
+const splitPipeList = function (raw: string | undefined): string[] | undefined {
+  if (raw === undefined || raw.trim() === '') {
+    return undefined;
+  }
+  const parts = raw.split('|').map((s) => s.trim()).filter(Boolean);
+  return parts.length ? parts : undefined;
+};
+
+type AkeylessArgs = Record<string, string | undefined>;
+
 /**
- * AkeylessLoader loads a static secret from Akeyless via the public API or a Gateway.
- * Pattern: akeyless(optionalArgs):/path/to/static-secret
+ * Akeyless loaders for static, dynamic, and rotated secrets.
  *
- * Environment:
+ * Prefixes (underscores match `${...}` expansion rules in SecretsFoundry):
+ * - `akeyless(optionalArgs):/path` — static secret (`get-secret-value`)
+ * - `akeyless_dynamic(optionalArgs):/path` — dynamic secret (`get-dynamic-secret-value`)
+ * - `akeyless_rotated(optionalArgs):/path` — rotated secret (`get-rotated-secret-value`)
+ *
+ * Environment (all kinds):
  * - AKEYLESS_GATEWAY_URL — API / Gateway base URL (default: https://api.akeyless.io)
- * - AKEYLESS_TOKEN — optional; if set, used instead of access-key auth
+ * - AKEYLESS_TOKEN — optional; if set, skips access-key auth
  * - AKEYLESS_ACCESS_ID and AKEYLESS_ACCESS_KEY — access_key auth when no token
  *
- * Optional loader args (comma-separated key=value), override env where noted:
- * - gateway — same as AKEYLESS_GATEWAY_URL
- * - ignore-cache — passed to get-secret-value (true/false)
- * - json — request JSON-shaped payload from API (true/false)
- * - version — secret version (number)
+ * Optional args (comma-separated key=value):
+ * - gateway — overrides AKEYLESS_GATEWAY_URL
+ *
+ * Static-only args: ignore-cache, json, version
+ *
+ * Dynamic-only args: timeout, args (pipe-separated entries, e.g. `args=--k=v|--x=y`), host, dbname, target, json
+ * Env fallback: AKEYLESS_DYNAMIC_TIMEOUT, AKEYLESS_DYNAMIC_ARGS (pipe-separated)
+ *
+ * Rotated-only args: host (or AKEYLESS_ROTATED_SECRET_HOST), ignore-cache, json, version
  */
 export default class AkeylessLoader extends Loader {
-  private static PATTERN =
-    /^akeyless(\(([:a-zA-Z0-9_;(=),\\.\-/]*)?\))?:([a-zA-Z0-9_.\-/]+)$/;
+  private static STATIC_PATTERN =
+    /^akeyless(\(([:a-zA-Z0-9_|;(=),\\.\-/]*)?\))?:([a-zA-Z0-9_.\-/]+)$/;
+
+  private static DYNAMIC_PATTERN =
+    /^akeyless_dynamic(\(([:a-zA-Z0-9_|;(=),\\.\-/]*)?\))?:([a-zA-Z0-9_.\-/]+)$/;
+
+  private static ROTATED_PATTERN =
+    /^akeyless_rotated(\(([:a-zA-Z0-9_|;(=),\\.\-/]*)?\))?:([a-zA-Z0-9_.\-/]+)$/;
 
   public canResolve(value: string): boolean {
-    return value.match(AkeylessLoader.PATTERN) !== null;
+    return (
+      value.match(AkeylessLoader.STATIC_PATTERN) !== null ||
+      value.match(AkeylessLoader.DYNAMIC_PATTERN) !== null ||
+      value.match(AkeylessLoader.ROTATED_PATTERN) !== null
+    );
   }
 
   public async resolve(variable: string): Promise<string> {
-    const groups = variable.match(AkeylessLoader.PATTERN);
-    if (groups === null) {
-      throw new Error(
-        'AkeylessLoader cannot parse the variable name. This should never happen \
-since the client is supposed to be calling canResolve first'
-      );
+    const dynamic = variable.match(AkeylessLoader.DYNAMIC_PATTERN);
+    if (dynamic) {
+      return this.resolveDynamic(dynamic[2], dynamic[3]);
     }
-    const args = this.getArgsFromStr(groups[2]);
-    const secretPath = groups[3];
+    const rotated = variable.match(AkeylessLoader.ROTATED_PATTERN);
+    if (rotated) {
+      return this.resolveRotated(rotated[2], rotated[3]);
+    }
+    const stat = variable.match(AkeylessLoader.STATIC_PATTERN);
+    if (stat) {
+      return this.resolveStatic(stat[2], stat[3]);
+    }
+    throw new Error(
+      'AkeylessLoader cannot parse the variable name. This should never happen \
+since the client is supposed to be calling canResolve first'
+    );
+  }
 
-    const gateway =
-      args.gateway ||
-      process.env.AKEYLESS_GATEWAY_URL?.trim() ||
-      'https://api.akeyless.io';
-
-    const akeyless = loadAkeyless();
-    const client = new akeyless.ApiClient();
-    client.basePath = gateway.replace(/\/$/, '');
-    const api = new akeyless.V2Api(client);
+  private async resolveTokenAndApi(args: AkeylessArgs): Promise<{
+    api: import('akeyless').V2Api;
+    token: string;
+    sdk: typeof import('akeyless');
+  }> {
+    const sdk = loadAkeyless();
+    const client = new sdk.ApiClient();
+    client.basePath = getGatewayUrl(args);
+    const api = new sdk.V2Api(client);
 
     let token = process.env.AKEYLESS_TOKEN?.trim();
     if (!token) {
@@ -106,7 +154,7 @@ since the client is supposed to be calling canResolve first'
           'Akeyless auth is not configured: set AKEYLESS_TOKEN, or both AKEYLESS_ACCESS_ID and AKEYLESS_ACCESS_KEY'
         );
       }
-      const authBody = akeyless.Auth.constructFromObject({
+      const authBody = sdk.Auth.constructFromObject({
         'access-id': accessId,
         'access-key': accessKey,
         'access-type': 'access_key',
@@ -117,6 +165,15 @@ since the client is supposed to be calling canResolve first'
         throw new Error('Akeyless authentication did not return a token');
       }
     }
+    return { api, token, sdk };
+  }
+
+  private async resolveStatic(
+    argsStr: string | undefined,
+    secretPath: string
+  ): Promise<string> {
+    const args = this.getArgsFromStr(argsStr ?? '');
+    const { api, token, sdk } = await this.resolveTokenAndApi(args);
 
     const getBody: Record<string, unknown> = {
       names: [secretPath],
@@ -137,11 +194,98 @@ since the client is supposed to be calling canResolve first'
       getBody.version = n;
     }
 
-    const payload = akeyless.GetSecretValue.constructFromObject(getBody);
+    const payload = sdk.GetSecretValue.constructFromObject(getBody);
     const raw = (await api.getSecretValue(payload)) as Record<
       string,
       unknown
     >;
     return pickSecretFromResponse(secretPath, raw);
+  }
+
+  private async resolveDynamic(
+    argsStr: string | undefined,
+    secretName: string
+  ): Promise<string> {
+    const args = this.getArgsFromStr(argsStr ?? '');
+    const { api, token, sdk } = await this.resolveTokenAndApi(args);
+
+    const body: Record<string, unknown> = {
+      name: secretName,
+      token,
+    };
+
+    const timeoutStr =
+      args.timeout || process.env.AKEYLESS_DYNAMIC_TIMEOUT?.trim();
+    if (timeoutStr !== undefined) {
+      const n = Number(timeoutStr);
+      if (!Number.isFinite(n) || n < 0) {
+        throw new Error(
+          'Akeyless dynamic loader "timeout" must be a non-negative number'
+        );
+      }
+      body.timeout = n;
+    }
+
+    const argList =
+      splitPipeList(args.args) ||
+      splitPipeList(process.env.AKEYLESS_DYNAMIC_ARGS);
+    if (argList) {
+      body.args = argList;
+    }
+    if (args.host) {
+      body.host = args.host;
+    }
+    if (args.dbname) {
+      body.dbname = args.dbname;
+    }
+    if (args.target) {
+      body.target = args.target;
+    }
+    if (args.json === 'true') {
+      body.json = true;
+    }
+
+    const payload = sdk.GetDynamicSecretValue.constructFromObject(body);
+    const raw = await api.getDynamicSecretValue(payload);
+    return formatStructuredResponse(raw);
+  }
+
+  private async resolveRotated(
+    argsStr: string | undefined,
+    secretPath: string
+  ): Promise<string> {
+    const args = this.getArgsFromStr(argsStr ?? '');
+    const { api, token, sdk } = await this.resolveTokenAndApi(args);
+
+    const body: Record<string, unknown> = {
+      names: secretPath,
+      token,
+    };
+
+    const host =
+      args.host || process.env.AKEYLESS_ROTATED_SECRET_HOST?.trim();
+    if (host) {
+      body.host = host;
+    }
+    if (args['ignore-cache'] !== undefined) {
+      body['ignore-cache'] =
+        args['ignore-cache'] === 'true' ? 'true' : 'false';
+    }
+    if (args.json === 'true') {
+      body.json = true;
+    }
+    if (args.version !== undefined) {
+      const n = Number(args.version);
+      if (!Number.isFinite(n)) {
+        throw new Error(
+          'Akeyless rotated loader "version" argument must be a number'
+        );
+      }
+      body.version = n;
+    }
+
+    const payload = sdk.GetRotatedSecretValue.constructFromObject(body);
+    const raw = await api.getRotatedSecretValue(payload);
+    return formatStructuredResponse(raw);
   }
 }
