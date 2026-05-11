@@ -1,3 +1,4 @@
+import '../slowBufferShim';
 import Loader from './loader';
 import AwsS3Loader from './AwsS3Loader';
 import AwsSecretsLoader from './AwsSecretsLoader';
