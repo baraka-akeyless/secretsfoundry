@@ -64,8 +64,8 @@ VARIABLE = "simple"
 GOOGLE_API_KEY = google_api_key
 ```
 
-You can similarily store your variables in AWS S3, AWS Secrets Manager and Hashicorp Vault.
-To use them as environment variables, you can simple use:
+You can similarly store your variables in AWS S3, AWS Secrets Manager, Hashicorp Vault, Google Secret Manager, or Akeyless.
+To use them as environment variables, you can simply use:
 
 ```js
 
@@ -82,6 +82,9 @@ AWS_S3_VALUE = ${aws-s3:bucket/key}
 
 // Use value from Hashicorp vault
 VAULT_VALUE = ${vault:/path/to/secret}
+
+// Use a static secret from Akeyless (set AKEYLESS_ACCESS_ID / AKEYLESS_ACCESS_KEY or AKEYLESS_TOKEN)
+API_KEY = ${akeyless:/prod/my-app/api-key}
 
 ```
 
@@ -111,8 +114,10 @@ SecretsFoundry currently provides support for the following sources:
 2. AWS Secrets Manager
 3. Hashicorp Vault
 4. AWS S3
+5. Google Secret Manager
+6. Akeyless (static secrets via `get-secret-value`)
 
-We will soon be extending support for GCP Secrets Engine and Azure Key Vault. If you need support
+We will soon be extending support for Azure Key Vault. If you need support
 for other sources, reach out to us for support or send a PR.
 
 ## Format in env files
@@ -140,6 +145,11 @@ AWS_S3_VALUE = ${aws-s3:bucket/key}
 
 // Use value from Hashicorp vault
 VAULT_VALUE = ${vault:/path/to/secret}
+
+// Akeyless static secret — env: AKEYLESS_GATEWAY_URL (optional), AKEYLESS_TOKEN or AKEYLESS_ACCESS_ID + AKEYLESS_ACCESS_KEY
+// Args: gateway, ignore-cache, json, version
+// Example: ${akeyless(gateway=https://gateway.example.com:8080/v2):/path/to/secret}
+AKEYLESS_SECRET = ${akeyless:/path/to/secret}
 ```
 
 ## Advanced Usage:
