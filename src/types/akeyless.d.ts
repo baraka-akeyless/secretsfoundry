@@ -5,7 +5,7 @@ declare module 'akeyless' {
 
   export class V2Api {
     constructor(client: ApiClient);
-    auth(body: unknown): Promise<{ token?: string }>;
+    auth(body: unknown): Promise<{ token?: string; expiration?: string }>;
     getSecretValue(body: unknown): Promise<Record<string, unknown>>;
     getDynamicSecretValue(body: unknown): Promise<unknown>;
     getRotatedSecretValue(body: unknown): Promise<unknown>;

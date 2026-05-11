@@ -73,7 +73,47 @@ const splitPipeList = function (raw: string | undefined): string[] | undefined {
   return parts.length ? parts : undefined;
 };
 
+/** Default access-key session length if /auth omits expiration (typical token ~15m). */
+const ACCESS_KEY_DEFAULT_TTL_MS = 14 * 60 * 1000;
+
+/** Pre-baked token cache window (no server hint). */
+const ENV_TOKEN_TTL_MS = 50 * 60 * 1000;
+
+/** Refresh slightly before expiry to avoid edge failures. */
+const EXPIRY_MARGIN_MS = 60 * 1000;
+
+const expiryFromAuthOutput = function (authOut: {
+  expiration?: string;
+}): number {
+  const exp = authOut?.expiration?.trim();
+  const now = Date.now();
+  if (!exp) {
+    return now + ACCESS_KEY_DEFAULT_TTL_MS;
+  }
+  const asNum = Number(exp);
+  if (Number.isFinite(asNum) && asNum > 1e12) {
+    return asNum;
+  }
+  if (Number.isFinite(asNum) && asNum > 1e9) {
+    return asNum * 1000;
+  }
+  const parsed = Date.parse(exp);
+  if (!Number.isNaN(parsed)) {
+    return parsed;
+  }
+  return now + ACCESS_KEY_DEFAULT_TTL_MS;
+};
+
 type AkeylessArgs = Record<string, string | undefined>;
+
+type CachedAkeylessSession = {
+  fingerprint: string;
+  gateway: string;
+  api: import('akeyless').V2Api;
+  sdk: typeof import('akeyless');
+  token: string;
+  expiresAtMs: number;
+};
 
 /**
  * Akeyless loaders for static, dynamic, and rotated secrets.
@@ -97,8 +137,14 @@ type AkeylessArgs = Record<string, string | undefined>;
  * Env fallback: AKEYLESS_DYNAMIC_TIMEOUT, AKEYLESS_DYNAMIC_ARGS (pipe-separated)
  *
  * Rotated-only args: host (or AKEYLESS_ROTATED_SECRET_HOST), ignore-cache, json, version
+ *
+ * Session: one loader instance (as registered in `Loaders`) reuses the same `V2Api`
+ * client and token until expiry or until gateway / credentials (fingerprint) change,
+ * so resolving many secrets does not repeat `/auth` for each variable.
  */
 export default class AkeylessLoader extends Loader {
+  private cachedSession: CachedAkeylessSession | null = null;
+
   private static STATIC_PATTERN =
     /^akeyless(\(([:a-zA-Z0-9_|;(=),\\.\-/]*)?\))?:([a-zA-Z0-9_.\-/]+)$/;
 
@@ -135,18 +181,47 @@ since the client is supposed to be calling canResolve first'
     );
   }
 
+  private sessionFingerprint(gateway: string): string {
+    const t = process.env.AKEYLESS_TOKEN?.trim();
+    if (t) {
+      return `token:${gateway}:${t}`;
+    }
+    const accessId = process.env.AKEYLESS_ACCESS_ID?.trim() ?? '';
+    const accessKey = process.env.AKEYLESS_ACCESS_KEY?.trim() ?? '';
+    return `access_key:${gateway}:${accessId}:${accessKey}`;
+  }
+
   private async resolveTokenAndApi(args: AkeylessArgs): Promise<{
     api: import('akeyless').V2Api;
     token: string;
     sdk: typeof import('akeyless');
   }> {
+    const gateway = getGatewayUrl(args);
+    const fingerprint = this.sessionFingerprint(gateway);
+    const now = Date.now();
+    if (
+      this.cachedSession &&
+      this.cachedSession.fingerprint === fingerprint &&
+      this.cachedSession.gateway === gateway &&
+      now < this.cachedSession.expiresAtMs
+    ) {
+      return {
+        api: this.cachedSession.api,
+        token: this.cachedSession.token,
+        sdk: this.cachedSession.sdk,
+      };
+    }
+
     const sdk = loadAkeyless();
     const client = new sdk.ApiClient();
-    client.basePath = getGatewayUrl(args);
+    client.basePath = gateway;
     const api = new sdk.V2Api(client);
 
     let token = process.env.AKEYLESS_TOKEN?.trim();
-    if (!token) {
+    let expiresAtMs: number;
+    if (token) {
+      expiresAtMs = now + ENV_TOKEN_TTL_MS;
+    } else {
       const accessId = process.env.AKEYLESS_ACCESS_ID?.trim();
       const accessKey = process.env.AKEYLESS_ACCESS_KEY?.trim();
       if (!accessId || !accessKey) {
@@ -164,7 +239,20 @@ since the client is supposed to be calling canResolve first'
       if (!token) {
         throw new Error('Akeyless authentication did not return a token');
       }
+      expiresAtMs = expiryFromAuthOutput(authOut) - EXPIRY_MARGIN_MS;
+      if (expiresAtMs <= now) {
+        expiresAtMs = now + ACCESS_KEY_DEFAULT_TTL_MS;
+      }
     }
+
+    this.cachedSession = {
+      fingerprint,
+      gateway,
+      api,
+      sdk,
+      token,
+      expiresAtMs,
+    };
     return { api, token, sdk };
   }
 

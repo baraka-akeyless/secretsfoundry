@@ -123,6 +123,8 @@ SecretsFoundry currently provides support for the following sources:
 5. Google Secret Manager
 6. Akeyless — static (`akeyless:`), dynamic (`akeyless_dynamic:`), and rotated (`akeyless_rotated:`) secrets
 
+For a single CLI run, the Akeyless loader **reuses one authenticated session** (same gateway and credentials) across all `${akeyless…}` / `${akeyless_dynamic…}` / `${akeyless_rotated…}` resolutions so `/auth` is not repeated per variable.
+
 We will soon be extending support for Azure Key Vault. If you need support
 for other sources, reach out to us for support or send a PR.
 

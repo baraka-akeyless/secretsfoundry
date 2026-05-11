@@ -103,6 +103,22 @@ describe('AkeylessLoader', () => {
     );
   });
 
+  it('should call /auth once when the same loader resolves multiple secrets', async () => {
+    process.env.AKEYLESS_ACCESS_ID = 'id';
+    process.env.AKEYLESS_ACCESS_KEY = 'key';
+    delete process.env.AKEYLESS_TOKEN;
+    mockAuth.mockResolvedValue({ token: 'tok', expiration: '4102444800000' });
+    mockGetSecretValue
+      .mockResolvedValueOnce({ '/a': '1' })
+      .mockResolvedValueOnce({ '/b': '2' });
+
+    const loader = new AkeylessLoader();
+    await expect(loader.resolve('akeyless:/a')).resolves.toBe('1');
+    await expect(loader.resolve('akeyless:/b')).resolves.toBe('2');
+    expect(mockAuth).toHaveBeenCalledTimes(1);
+    expect(mockGetSecretValue).toHaveBeenCalledTimes(2);
+  });
+
   it('should resolve using AKEYLESS_TOKEN without calling auth', async () => {
     process.env.AKEYLESS_TOKEN = 'pre-baked';
     delete process.env.AKEYLESS_ACCESS_ID;
