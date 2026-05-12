@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import Loader from './loader';
 
 /** Lazy require so importing `Loaders` does not load the SDK (Jest / tree-shaking friendly). */
@@ -73,6 +74,11 @@ const splitPipeList = function (raw: string | undefined): string[] | undefined {
   return parts.length ? parts : undefined;
 };
 
+/** SHA-256 hex for cache keys — avoids keeping raw secrets in fingerprint strings. */
+const sha256Hex = function (value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+};
+
 /** Default access-key session length if /auth omits expiration (typical token ~15m). */
 const ACCESS_KEY_DEFAULT_TTL_MS = 14 * 60 * 1000;
 
@@ -140,7 +146,9 @@ type CachedAkeylessSession = {
  *
  * Session: one loader instance (as registered in `Loaders`) reuses the same `V2Api`
  * client and token until expiry or until gateway / credentials (fingerprint) change,
- * so resolving many secrets does not repeat `/auth` for each variable.
+ * so resolving many secrets does not repeat `/auth` for each variable. Session
+ * fingerprints use SHA-256 hashes of secret material (token or access id+key),
+ * not raw credentials in strings.
  */
 export default class AkeylessLoader extends Loader {
   private cachedSession: CachedAkeylessSession | null = null;
@@ -184,11 +192,11 @@ since the client is supposed to be calling canResolve first'
   private sessionFingerprint(gateway: string): string {
     const t = process.env.AKEYLESS_TOKEN?.trim();
     if (t) {
-      return `token:${gateway}:${t}`;
+      return `token:${gateway}:${sha256Hex(t)}`;
     }
     const accessId = process.env.AKEYLESS_ACCESS_ID?.trim() ?? '';
     const accessKey = process.env.AKEYLESS_ACCESS_KEY?.trim() ?? '';
-    return `access_key:${gateway}:${accessId}:${accessKey}`;
+    return `access_key:${gateway}:${sha256Hex(`${accessId}\0${accessKey}`)}`;
   }
 
   private async resolveTokenAndApi(args: AkeylessArgs): Promise<{
